@@ -3,6 +3,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-3.5-flash" 
 TEMPERATURE = 0.7
