@@ -64,27 +64,5 @@ def main():
 
 
 
-        if user_input.lower().startswith("remember:"):
-            note_content = user_input[len("remember:"):].strip()
-            if note_content:
-                save_note(note_content)
-                print("Bot: Got it! I' have saved that to your personal notes.\n")
-                continue
-
-        elif user_input.lower() in ["what do you remember?", "show my notes"]:
-            notes = get_all_notes()
-            print(f"Bot:\n{notes}\n")
-            continue
-
-
-
-
-        if academic_chain:
-            response = academic_query(academic_chain, user_input)
-        else:
-            response = general_chain.predict(input=user_input)
-
-        print(f"Bot: {response}\n")
-
 if __name__ == "__main__":
     main()
