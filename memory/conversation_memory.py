@@ -1,4 +1,4 @@
-from langchain.memory import ConversationBufferMemory
+from langchain_classic.memory import ConversationBufferMemory
 from langchain_community.chat_message_histories import FileChatMessageHistory
 import os
 
