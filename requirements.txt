@@ -6,3 +6,6 @@ faiss-cpu
 pypdf
 python-dotenv
 tiktoken
+fastapi
+uvicorn[standard]
+python-multipart
