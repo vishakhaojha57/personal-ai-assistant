@@ -173,20 +173,17 @@ async def chat(request_data: ChatRequest, req: Request):
     # ── Classify intent ──────────────────────────────────────
     async def event_generator():
         try:
-            try:
-                category = classify_input(router_chain, user_input)
-            except AttributeError:
-                raw_response = router_chain.invoke({"user_input": user_input})
-                content = raw_response.content
-                if isinstance(content, list):
-                    content = "".join(
-                        part.get("text", str(part)) if isinstance(part, dict) else str(part)
-                        for part in content
-                    )
-                category = content.strip().upper()
-                if category not in ["ACADEMIC", "NOTES", "GENERAL"]:
-                    category = "GENERAL"
-                    
+            # Only invoke the router chain once
+            raw_response = router_chain.invoke({"user_input": user_input})
+            category_content = raw_response.content
+            
+            category_text = safe_str(category_content).strip().upper()
+            
+            if category_text not in ["ACADEMIC", "NOTES", "GENERAL"]:
+                category_text = "GENERAL"
+                
+            category = category_text
+
             # Determine which path to take before yielding category
             use_pdf = False
             if active_pdfs and (category == "ACADEMIC" or is_query_relevant_to_pdfs(user_input, active_pdfs)):
@@ -208,7 +205,9 @@ async def chat(request_data: ChatRequest, req: Request):
                         if event["event"] == "on_chat_model_stream":
                             chunk = event["data"]["chunk"].content
                             if chunk:
-                                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                                text_chunk = safe_str(chunk)
+                                if text_chunk:
+                                    yield f"data: {json.dumps({'type': 'chunk', 'text': text_chunk})}\n\n"
                 except FileNotFoundError:
                     # All active PDFs failed to index
                     yield f"data: {json.dumps({'type': 'chunk', 'text': 'I apologize, but I am unable to read the PDFs you uploaded. They might be scanned images, empty, or corrupted. Please try uploading a different PDF with selectable text.'})}\n\n"
@@ -240,7 +239,9 @@ async def chat(request_data: ChatRequest, req: Request):
                     if event["event"] == "on_chat_model_stream":
                         chunk = event["data"]["chunk"].content
                         if chunk:
-                            yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                            text_chunk = safe_str(chunk)
+                            if text_chunk:
+                                yield f"data: {json.dumps({'type': 'chunk', 'text': text_chunk})}\n\n"
                             
         except asyncio.CancelledError:
             pass # Client disconnected (Stopped generation)

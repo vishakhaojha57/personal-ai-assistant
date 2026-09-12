@@ -15,7 +15,8 @@ RELEVANCE_THRESHOLD = 0.25
 
 def get_embeddings():
     from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    from config import GOOGLE_API_KEY
+    return GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=GOOGLE_API_KEY)
 
 
 # ── Helpers ────────────────────────────────────────────────────────
