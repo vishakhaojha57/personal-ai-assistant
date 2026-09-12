@@ -77,7 +77,7 @@ def get_academic_chain_for_pdfs(llm, pdf_filenames: list):
 
     for fname in pdf_filenames:
         store_path = _pdf_store_path(fname)
-        if not os.path.exists(store_path):
+        if not os.path.exists(os.path.join(store_path, "index.faiss")):
             continue  # skip PDFs whose index hasn't been built yet
         store = FAISS.load_local(
             store_path, embeddings, allow_dangerous_deserialization=True
@@ -107,7 +107,7 @@ def is_query_relevant_to_pdfs(question: str, pdf_filenames: list,
 
         for fname in pdf_filenames:
             store_path = _pdf_store_path(fname)
-            if not os.path.exists(store_path):
+            if not os.path.exists(os.path.join(store_path, "index.faiss")):
                 continue
             store = FAISS.load_local(
                 store_path, embeddings, allow_dangerous_deserialization=True

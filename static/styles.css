@@ -730,7 +730,7 @@ body {
     color: var(--text-muted);
 }
 
-.send-btn {
+.send-btn, .stop-btn {
     width: 34px;
     height: 34px;
     border-radius: 8px;
@@ -743,6 +743,14 @@ body {
     justify-content: center;
     flex-shrink: 0;
     transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.stop-btn {
+    background: #e74c3c;
+}
+
+.stop-btn:hover:not(:disabled) {
+    background: #c0392b;
 }
 
 .send-btn:hover:not(:disabled) {

@@ -145,6 +145,17 @@ function initEventListeners() {
 // ═══════════════════════════════════════════════════════════════
 // Chat
 // ═══════════════════════════════════════════════════════════════
+let currentAbortController = null;
+const stopBtn = $('#stop-btn');
+
+if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+        if (currentAbortController) {
+            currentAbortController.abort();
+        }
+    });
+}
+
 async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text || isProcessing) return;
@@ -155,45 +166,118 @@ async function sendMessage() {
 
     appendMessage('user', text);
     messageInput.value = '';
+    
     sendBtn.disabled = true;
+    sendBtn.style.display = 'none';
+    stopBtn.style.display = 'flex';
+    
     autoResizeTextarea(messageInput);
     showTyping();
+
+    currentAbortController = new AbortController();
+    let botBubble = null;
+    let fullResponse = "";
 
     try {
         const res = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, session_id: sessionId })
+            body: JSON.stringify({ message: text, session_id: sessionId }),
+            signal: currentAbortController.signal
         });
 
         hideTyping();
 
         if (!res.ok) {
-            const err = await res.json();
-            const detail = err.detail || 'Something went wrong';
             if (res.status === 429) {
                 appendRateLimitMessage();
             } else {
                 appendMessage('bot', '⚠️ Oops! Something went wrong on my end. Please try again.', 'GENERAL');
                 showToast('error', 'Failed to get response');
             }
-            isProcessing = false;
-            messageInput.focus();
-            return;
+            throw new Error("HTTP Error " + res.status);
         }
 
-        const data = await res.json();
-        updateModeBadge(data.category);
-        appendMessage('bot', data.response, data.category);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            
+            const chunkText = decoder.decode(value, { stream: true });
+            const lines = chunkText.split('\n\n');
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.substring(6));
+                        if (data.type === 'category') {
+                            updateModeBadge(data.category);
+                            if (!botBubble) botBubble = createBotMessageShell(data.category);
+                        } else if (data.type === 'chunk') {
+                            if (!botBubble) botBubble = createBotMessageShell('GENERAL');
+                            fullResponse += data.text;
+                            botBubble.innerHTML = formatBotResponse(fullResponse);
+                            requestAnimationFrame(() => {
+                                chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: 'auto' });
+                            });
+                        } else if (data.type === 'error') {
+                            if (!botBubble) botBubble = createBotMessageShell('GENERAL');
+                            botBubble.innerHTML = formatBotResponse(data.text);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing SSE json', e, line);
+                    }
+                }
+            }
+        }
 
     } catch (err) {
         hideTyping();
-        appendMessage('bot', '⚠️ Could not reach the server. Please check your connection and try again.', 'GENERAL');
-        showToast('error', 'Connection failed');
+        if (err.name === 'AbortError') {
+             showToast('info', 'Generation stopped');
+        } else if (!err.message.startsWith('HTTP')) {
+            appendMessage('bot', '⚠️ Could not reach the server. Please check your connection and try again.', 'GENERAL');
+            showToast('error', 'Connection failed');
+        }
+    } finally {
+        isProcessing = false;
+        sendBtn.style.display = 'flex';
+        sendBtn.disabled = !messageInput.value.trim();
+        stopBtn.style.display = 'none';
+        currentAbortController = null;
+        messageInput.focus();
+    }
+}
+
+function createBotMessageShell(category) {
+    const wrapper = document.createElement('div');
+    wrapper.classList.add('message', 'bot');
+
+    const avatar = document.createElement('div');
+    avatar.classList.add('message-avatar');
+    avatar.textContent = 'AI';
+
+    const body = document.createElement('div');
+    body.classList.add('message-body');
+
+    if (category) {
+        const catBadge = document.createElement('div');
+        catBadge.classList.add('message-category', `cat-${category}`);
+        catBadge.textContent = category;
+        body.appendChild(catBadge);
     }
 
-    isProcessing = false;
-    messageInput.focus();
+    const bubble = document.createElement('div');
+    bubble.classList.add('message-content');
+    
+    body.appendChild(bubble);
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(body);
+    chatMessages.appendChild(wrapper);
+    
+    return bubble;
 }
 
 function appendMessage(role, content, category = null) {

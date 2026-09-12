@@ -4,13 +4,15 @@ Wraps existing core logic (chains, memory, notes) as REST APIs
 and serves the premium web UI from static/ folder.
 """
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import os
 import shutil
 import traceback
+import json
+import asyncio
 from typing import Optional
 
 # ─── Import core logic ────────────────────────────────────────────
@@ -66,8 +68,11 @@ def get_session_chain(session_id: str):
 
 
 def session_active_pdfs(session_id: str) -> list:
-    """Return list of PDFs uploaded/active in this session."""
-    return session_pdfs.get(session_id, [])
+    """Return list of ALL uploaded PDFs (personal chatbot uses all by default)."""
+    try:
+        return [f for f in os.listdir(academic_docs_dir) if f.endswith('.pdf')]
+    except Exception:
+        return []
 
 
 # ─── Pydantic Models ──────────────────────────────────────────────
@@ -151,22 +156,13 @@ async def new_chat(request: NewChatRequest):
     return {"status": "ok", "message": "New chat session started."}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@app.post("/api/chat")
+async def chat(request_data: ChatRequest, req: Request):
     """
-    Main chat endpoint.
-
-    Routing logic:
-      A. Session HAS active PDFs:
-         1. Check if query is relevant to those PDFs → answer from THOSE PDFs only
-         2. Not relevant → general conversation
-      B. Session has NO active PDFs:
-         1. NOTES category → notes store
-         2. Otherwise → general conversation
-            + if query matches past conversations → inject that context first
+    Main chat endpoint (Streaming).
     """
-    sid = request.session_id or DEFAULT_SESSION
-    user_input = request.message.strip()
+    sid = request_data.session_id or DEFAULT_SESSION
+    user_input = request_data.message.strip()
 
     if not user_input:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -174,87 +170,88 @@ async def chat(request: ChatRequest):
     session_chain = get_session_chain(sid)
     active_pdfs = session_active_pdfs(sid)
 
-    try:
-        # ── Classify intent ──────────────────────────────────────
+    # ── Classify intent ──────────────────────────────────────
+    async def event_generator():
         try:
-            category = classify_input(router_chain, user_input)
-        except AttributeError:
-            raw_response = router_chain.invoke({"user_input": user_input})
-            content = raw_response.content
-            if isinstance(content, list):
-                content = "".join(
-                    part.get("text", str(part)) if isinstance(part, dict) else str(part)
-                    for part in content
-                )
-            category = content.strip().upper()
-            if category not in ["ACADEMIC", "NOTES", "GENERAL"]:
+            try:
+                category = classify_input(router_chain, user_input)
+            except AttributeError:
+                raw_response = router_chain.invoke({"user_input": user_input})
+                content = raw_response.content
+                if isinstance(content, list):
+                    content = "".join(
+                        part.get("text", str(part)) if isinstance(part, dict) else str(part)
+                        for part in content
+                    )
+                category = content.strip().upper()
+                if category not in ["ACADEMIC", "NOTES", "GENERAL"]:
+                    category = "GENERAL"
+                    
+            # Determine which path to take before yielding category
+            use_pdf = False
+            if active_pdfs and (category == "ACADEMIC" or is_query_relevant_to_pdfs(user_input, active_pdfs)):
+                use_pdf = True
+                category = "ACADEMIC"
+            elif category == "ACADEMIC":
+                # If classified as academic but no relevant pdfs found, fallback to general
                 category = "GENERAL"
 
-        # ══════════════════════════════════════════════════════════
-        # PATH A: Session has active PDFs → answer only from them
-        # ══════════════════════════════════════════════════════════
-        if active_pdfs:
-            # Always check relevance first — don't force PDF answer for
-            # unrelated questions (e.g. "how are you")
-            if is_query_relevant_to_pdfs(user_input, active_pdfs):
+            # Now yield the correct final category to UI
+            yield f"data: {json.dumps({'type': 'category', 'category': category})}\n\n"
+
+            if use_pdf:
                 try:
                     pdf_chain = get_academic_chain_for_pdfs(llm, active_pdfs)
-                    response = safe_str(academic_query(pdf_chain, user_input))
-                    category = "ACADEMIC"
-                except Exception as pdf_err:
-                    if is_rate_limit_error(pdf_err):
-                        raise
-                    # Fallback to general if PDF chain fails
-                    response = safe_str(session_chain.predict(input=user_input))
-                    category = "GENERAL"
+                    async for event in pdf_chain.astream_events({"query": user_input}, version="v2"):
+                        if await req.is_disconnected():
+                            break
+                        if event["event"] == "on_chat_model_stream":
+                            chunk = event["data"]["chunk"].content
+                            if chunk:
+                                yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                except FileNotFoundError:
+                    # All active PDFs failed to index
+                    yield f"data: {json.dumps({'type': 'chunk', 'text': 'I apologize, but I am unable to read the PDFs you uploaded. They might be scanned images, empty, or corrupted. Please try uploading a different PDF with selectable text.'})}\n\n"
             else:
-                # Query not about the PDF → general answer
-                response = safe_str(session_chain.predict(input=user_input))
-                category = "GENERAL"
+                # PATH B: Notes or General
+                if category == "NOTES":
+                    if user_input.lower().startswith("remember:"):
+                        note_content = user_input[len("remember:"):].strip()
+                        if note_content:
+                            save_note(note_content)
+                            response_text = "Got it! I've saved that to your personal notes. 📝"
+                        else:
+                            response_text = "Please provide some content after 'remember:' to save."
+                        yield f"data: {json.dumps({'type': 'chunk', 'text': response_text})}\n\n"
+                        return
 
-        # ══════════════════════════════════════════════════════════
-        # PATH B: No active PDFs — notes or general + past memory
-        # ══════════════════════════════════════════════════════════
-        else:
-            if category == "NOTES":
-                if user_input.lower().startswith("remember:"):
-                    note_content = user_input[len("remember:"):].strip()
-                    if note_content:
-                        save_note(note_content)
-                        response = "Got it! I've saved that to your personal notes. 📝"
-                    else:
-                        response = "Please provide some content after 'remember:' to save."
-                else:
                     notes_context = get_all_notes()
-                    prompt_with_notes = (
-                        f"Here are my personal notes:\n{notes_context}\n\n"
-                        f"Answer the user based on these notes. User: {user_input}"
-                    )
-                    response = safe_str(session_chain.predict(input=prompt_with_notes))
-            else:
-                # General chat — also search past conversations (GPT-style memory)
-                past_context = search_past_conversations(user_input, sid)
-                if past_context:
-                    augmented_input = (
-                        f"{past_context}\n\n"
-                        f"Now answer the user's current question using the above context "
-                        f"if relevant:\n{user_input}"
-                    )
-                    response = safe_str(session_chain.predict(input=augmented_input))
+                    input_vars = {"input": f"Here are my personal notes:\n{notes_context}\n\nAnswer the user based on these notes. User: {user_input}"}
                 else:
-                    response = safe_str(session_chain.predict(input=user_input))
-                category = "GENERAL"
+                    past_context = search_past_conversations(user_input, sid)
+                    if past_context:
+                        input_vars = {"input": f"{past_context}\n\nNow answer the user's current question using the above context if relevant:\n{user_input}"}
+                    else:
+                        input_vars = {"input": user_input}
 
-        return ChatResponse(response=response, category=category)
+                async for event in session_chain.astream_events(input_vars, version="v2"):
+                    if await req.is_disconnected():
+                        break
+                    if event["event"] == "on_chat_model_stream":
+                        chunk = event["data"]["chunk"].content
+                        if chunk:
+                            yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+                            
+        except asyncio.CancelledError:
+            pass # Client disconnected (Stopped generation)
+        except Exception as e:
+            traceback.print_exc()
+            if is_rate_limit_error(e):
+                yield f"data: {json.dumps({'type': 'error', 'text': RATE_LIMIT_MESSAGE})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'text': 'Something went wrong on my end. Please try again.'})}\n\n"
 
-    except Exception as e:
-        traceback.print_exc()
-        if is_rate_limit_error(e):
-            raise HTTPException(status_code=429, detail=RATE_LIMIT_MESSAGE)
-        raise HTTPException(
-            status_code=500,
-            detail="Something went wrong on my end. Please try again."
-        )
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/upload-pdf")
@@ -276,8 +273,13 @@ async def upload_pdf(
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Build an isolated FAISS index for this PDF only
-        build_vector_store_for_pdf(file_path)
+        try:
+            # Build an isolated FAISS index for this PDF only
+            build_vector_store_for_pdf(file_path)
+        except Exception:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise
 
         # Register this PDF under the current session (REPLACES any previous active PDF)
         session_pdfs[session_id] = [file.filename]

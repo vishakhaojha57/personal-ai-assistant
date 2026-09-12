@@ -14,7 +14,8 @@ def get_llm():
     return ChatGoogleGenerativeAI(
         model=MODEL_NAME,
         google_api_key = GOOGLE_API_KEY,
-        temperature = TEMPERATURE
+        temperature = TEMPERATURE,
+        streaming=True
     )
 
 def get_conversation_chain(llm, memory):
