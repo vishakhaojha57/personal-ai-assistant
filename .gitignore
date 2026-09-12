@@ -15,7 +15,7 @@ __pycache__/
 
 # User/Application data
 history/
-notes/
+notes/*.json
 data/
 
 # IDEs
