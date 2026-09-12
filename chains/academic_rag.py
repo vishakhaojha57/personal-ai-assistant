@@ -1,7 +1,6 @@
 import os
 import re
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_classic.chains import RetrievalQA
 from config import MODEL_NAME
 from utils.loaders import load_and_split_pdfs, load_and_split_single_pdf
@@ -14,9 +13,9 @@ LEGACY_VECTOR_STORE_PATH = "data/vector_store"   # kept for backward compat
 RELEVANCE_THRESHOLD = 0.25
 
 
-# ── Embeddings ─────────────────────────────────────────────────────
 def get_embeddings():
-    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+    return GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
 
 # ── Helpers ────────────────────────────────────────────────────────
