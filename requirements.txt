@@ -9,3 +9,5 @@ tiktoken
 fastapi
 uvicorn[standard]
 python-multipart
+langchain-classic
+sentence-transformers
